@@ -1,8 +1,9 @@
 import pandas as pd
 import requests
-import json
-import asyncio
+import asyncio as aio
+from aiohttp import ClientSession
 from time import time
+from typing import List
 
 
 def init_columns():
@@ -12,40 +13,40 @@ def init_columns():
     out_df[label_names['violation']] = ''
 
 
-def fill_columns_from_api():
-    print(out_df.shape[0])
-    global hh_sum, tv_sum
+# def fill_columns_from_api():
+#     print(out_df.shape[0])
+#     global hh_sum, tv_sum
 
-    for ind, inn in enumerate(out_df[label_names['inn']]):
-        t0 = time()
-        try:
-            json_response = json.loads(requests.get(url=f'{url}{inn}', params={'name': out_df.loc[ind, label_names['company_name']]}).text)
-        except Exception as e:
-            print(e)
-            save_to_excel()
-            # loop.close()
-            exit(-1)
+#     for ind, inn in enumerate(out_df[label_names['inn']]):
+#         t0 = time()
+#         try:
+#             json_response = json.loads(requests.get(url=f'{url}{inn}', params={'name': out_df.loc[ind, label_names['company_name']]}).text)
+#         except Exception as e:
+#             print(e)
+#             save_to_excel()
+#             # loop.close()
+#             exit(-1)
 
-        if 'empty' in json_response.keys():
-            if json_response['empty'] == True:
-                continue
-        if 'incorrect' in json_response.keys():
-            if json_response['incorrect'] == True:
-                continue
+#         if 'empty' in json_response.keys():
+#             if json_response['empty'] == True:
+#                 continue
+#         if 'incorrect' in json_response.keys():
+#             if json_response['incorrect'] == True:
+#                 continue
         
-        curr_hh_count = json_response['hh']['total']
-        curr_trudvsem_count = json_response['trudVsem']['total']
+#         curr_hh_count = json_response['hh']['total']
+#         curr_trudvsem_count = json_response['trudVsem']['total']
 
-        out_df.loc[ind, label_names['hh_vacancies']] = curr_hh_count
-        out_df.loc[ind, label_names['tv_vacancies']] = curr_trudvsem_count
-        out_df.loc[ind, label_names['contracts']] = 'Есть' if json_response['hasCompanyContracts'] else 'Нет'
+#         out_df.loc[ind, label_names['hh_vacancies']] = curr_hh_count
+#         out_df.loc[ind, label_names['tv_vacancies']] = curr_trudvsem_count
+#         out_df.loc[ind, label_names['contracts']] = 'Есть' if json_response['hasCompanyContracts'] else 'Нет'
 
-        hh_sum += curr_hh_count
-        tv_sum += curr_trudvsem_count
-        print(f'{ind}...{round(time() - t0, 2)}')
+#         hh_sum += curr_hh_count
+#         tv_sum += curr_trudvsem_count
+#         print(f'{ind}...{round(time() - t0, 2)}')
 
 
-def getIsCompanyIllegalLabel(hh_count, tv_count, has_contracts):
+def getIsCompanyIllegalLabel(hh_count: int, tv_count: int, has_contracts: bool) -> str:
     if hh_count > 0 and tv_count == 0:
         return 'Грубые'
     if hh_count > tv_count and has_contracts == 'Есть':
@@ -56,8 +57,8 @@ def getIsCompanyIllegalLabel(hh_count, tv_count, has_contracts):
 
 
 def save_to_excel():
-    # need to increment version by yourself
-    version = 10
+    global out_df
+    
     returned_df = out_df[
         [
             label_names['index'], 
@@ -71,15 +72,72 @@ def save_to_excel():
     ]
     del out_df
     returned_df.set_index(label_names['index'], inplace=True)
-    returned_df.to_excel(f'./xls/new_api_big_batch_v{version}.xlsx', start_row=0, start_col=0)
+    returned_df.to_excel(f'./xls/async_excel_result.xlsx', startrow=0, startcol=0)
 
 
-def get_batch_of_data_to_tests(df, data_size):
-    out_df = df[:data_size]
-    return [(inn, comp_name) for inn, comp_name in zip(out_df['Наименование организации'], out_df['ИНН'])]
+async def fetch_data(url: str, inn: int, company_name: str, session) -> (int, int, bool):
+    async with session.get(url=f'{url}{inn}', params={'name' : company_name}) as response:
+        try:
+            data = await response.json()
+        except Exception as e:
+            print(e)
+            save_to_excel()
+            exit(-1)
+
+        error_data = (-1, -1, False)
+        if 'empty' in data.keys():
+            if data['empty'] == True:
+                return error_data
+        if 'incorrect' in data.keys():
+            if data['incorrect'] == True:
+                return error_data
+
+        # there is no errors
+        has_company_contracts = data['hasCompanyContracts']
+        hh_vacancies = data['hh']['total']
+        tv_vacancies = data['trudVsem']['total']
+        
+        return hh_vacancies, tv_vacancies, has_company_contracts
+
+async def batch_request(url: str, inns: List[int], company_names: List[str]): #  -> List[(int, int, bool)]
+    tasks = []
+    results = []
+    async with ClientSession() as session:
+        for inn, company_name in zip(inns, company_names):
+            task = aio.create_task(fetch_data(url, inn, company_name, session))
+            tasks.append(task)
+
+        results = await aio.gather(*tasks)
+    return results
+
+async def main(url: str, batch_size: int):
+    n_full_batches = n_companies // batch_size
+    n_remaining_requests = n_companies % batch_size
+
+    for batch in range(n_full_batches):
+        t0 = time()
+        curr_position = batch * batch_size
+        curr_df = out_df[curr_position:curr_position + batch_size]
+        inns, company_names = curr_df[label_names['inn']], curr_df[label_names['company_name']]
+
+        results = await batch_request(url, inns, company_names)
+        for i, triplet in enumerate(results):
+            # collecting global sums about vacancies count
+            global hh_sum, tv_sum
+            if triplet[0] != -1:
+                hh_sum += triplet[0]
+                tv_sum += triplet[1]
+
+            out_df.loc[curr_position + i, [label_names['hh_vacancies'], label_names['tv_vacancies'], label_names['contracts']]] = triplet
+
+            has_contrs = triplet[2]
+            out_df.loc[curr_position + i, label_names['contracts']] = 'Есть' if has_contrs else 'Нет'
+        
+        print(f'Batch #{batch + 1} elapsed time by batch in main func: {round(time() - t0, 3)} s')
 
 
 if __name__ == '__main__':
+    start_time = time()
     label_names = {
             'index' : '№',
             'company_name' : 'Наименование организации',
@@ -97,15 +155,14 @@ if __name__ == '__main__':
     out_df = df[[label_names['index'], label_names['company_name'], label_names['inn']]].copy()
     del df
 
+    n_companies = out_df.shape[0]
     init_columns()
-
-    # loop = asyncio.get_event_loop()
-    # smth = asyncio.create_task() # pass an async def in this method 
-    # loop.run_until_complete(smth)
-
-    fill_columns_from_api()
-    for i in range(out_df.shape[0]):
+    # run async coroutine that will fetch responses simultaneous by batch
+    aio.run(main(url, batch_size=30))
+    # fill_columns_from_api()
+    for i in range(n_companies):
         out_df.loc[i, label_names['violation']] = getIsCompanyIllegalLabel(out_df.loc[i, label_names['hh_vacancies']], out_df.loc[i, label_names['tv_vacancies']], out_df.loc[i, label_names['contracts']])
 
     print(f'Вакансий на hh.ru: {hh_sum}\nВакансий на trudvsem: {tv_sum}')
     save_to_excel()
+    print(f'Total time: {round(time() - start_time, 3)} s')
