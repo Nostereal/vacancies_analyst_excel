@@ -14,7 +14,7 @@
 
 * ### На самом деле, нам потребуется только эта часть:
 
-  * ![Minimum info excel table](https://i.imgur.com/PSxiEOc.png "Min info excel table")
+  ![Minimum info excel table](https://i.imgur.com/PSxiEOc.png "Min info excel table")
 
 * ### На выходе вы получаете также Excel таблицу, но уже в таком формате:
 
