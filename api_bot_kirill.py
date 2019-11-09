@@ -38,7 +38,7 @@ def save_to_excel():
     ]
     del out_df
     returned_df.set_index(label_names['index'], inplace=True)
-    returned_df.to_excel(f'./xls/async_excel_result.xlsx', startrow=0, startcol=0)
+    returned_df.to_excel(f'../xls/async_excel_result.xlsx', startrow=0, startcol=0)
 
 
 async def fetch_data(url: str, inn: int, company_name: str, session) -> (int, int, bool):
@@ -77,9 +77,8 @@ async def batch_request(url: str, inns: List[int], company_names: List[str]): # 
     return results
 
 
-async def handle_single_batch(url: str, batch_id: int, batch_size: int):
-    t0 = time()
-    curr_position = batch_id * batch_size
+async def handle_single_batch(url: str, batch_size: int, last_position: int) -> int:
+    curr_position = last_position
     curr_df = out_df[curr_position:curr_position + batch_size]
     inns, company_names = curr_df[label_names['inn']], curr_df[label_names['company_name']]
 
@@ -96,18 +95,25 @@ async def handle_single_batch(url: str, batch_id: int, batch_size: int):
         has_contrs = triplet[2]
         out_df.loc[curr_position + i, label_names['contracts']] = 'Есть' if has_contrs else 'Нет'
         
-    print(f'Batch #{batch_id + 1} elapsed time by batch in main func: {round(time() - t0, 3)} s')
+    return curr_position + batch_size
 
 
 async def main(url: str, batch_size: int):
     n_full_batches = n_companies // batch_size
     n_remaining_requests = n_companies % batch_size
 
+    print(f'Total batches: {n_full_batches + 1 if n_remaining_requests != 0 else 0}')
+
+    last_pos = 0
     for batch in range(n_full_batches):
-        await handle_single_batch(url, batch, batch_size)
+        t0 = time()
+        last_pos = await handle_single_batch(url, batch_size, last_pos)
+        print(f'Batch #{batch + 1} elapsed time: {round(time() - t0, 3)} s')
 
     # last batch for remaining requests
-    await handle_single_batch(url, n_full_batches, n_remaining_requests)
+    t0 = time()
+    await handle_single_batch(url, n_remaining_requests, last_pos)
+    print(f'Batch #{n_full_batches + 1} elapsed time: {round(time() - t0, 3)} s')
 
 
 if __name__ == '__main__':
@@ -124,17 +130,19 @@ if __name__ == '__main__':
 
     url = 'https://polar-island-74903.herokuapp.com/inn/'
     hh_sum, tv_sum = 0, 0 
-    df = pd.read_excel('./xls/Список_заказчиков.xlsx', sheet_name=0)
+    df = pd.read_excel('../xls/Список_заказчиков.xlsx', sheet_name=0)
 
     out_df = df[[label_names['index'], label_names['company_name'], label_names['inn']]].copy()
     del df
 
     n_companies = out_df.shape[0]
+    print(f'Companies: {n_companies}')
     init_columns()
+
     # run async coroutine that will fetch responses simultaneous by batch
     print('...Start sending requests...')
     aio.run(main(url, batch_size=30))
-    # fill_columns_from_api()
+    
     for i in range(n_companies):
         out_df.loc[i, label_names['violation']] = getIsCompanyIllegalLabel(out_df.loc[i, label_names['hh_vacancies']], out_df.loc[i, label_names['tv_vacancies']], out_df.loc[i, label_names['contracts']])
 
